@@ -111,7 +111,7 @@ uniform int TEXTURED_NORMALS_QUALITY <
 #if LAUNCHPAD_DEBUG_OUTPUT != 0
 uniform int DEBUG_MODE < 
     ui_type = "combo";
-	ui_items = "All\0Optical Flow\0Normals\0Depth\0";
+	ui_items = "All\0Optical Flow\0Optical Flow Vectors\0Normals\0Depth\0";
 	ui_label = "Debug Output";
 > = 0;
 #endif
@@ -1065,13 +1065,35 @@ void DebugPS(in VSOUT i, out float3 o : SV_Target0)
 			int qq = q.x * 2 + q.y;
 			if(qq == 0) o = Deferred::get_normals(tuv) * 0.5 + 0.5;
 			if(qq == 1) o = gradient(Depth::get_linear_depth(tuv));
-			if(qq == 2) o = showmotion(Deferred::get_motion(tuv));	
-			if(qq == 3) o = tex2Dlod(ColorInput, tuv, 0).rgb;	
+			if(qq == 2) o = showmotion(Deferred::get_motion(tuv));
+			if(qq == 3) o = tex2Dlod(ColorInput, tuv, 0).rgb;
 			break;			
 		}
 		case 1: o = showmotion(Deferred::get_motion(i.uv)); break;
-		case 2: o = Deferred::get_normals(i.uv) * 0.5 + 0.5; break;
-		case 3: o = gradient(Depth::get_linear_depth(i.uv)); break;
+		case 2:
+		{
+			float2 tile_size = 16.0;
+			float2 tile_uv = i.uv * BUFFER_SCREEN_SIZE / tile_size;
+			float2 motion = Deferred::get_motion((floor(tile_uv) + 0.5) * tile_size * BUFFER_PIXEL_SIZE);
+
+			float3 chroma = showmotion(motion);
+			
+			motion *= BUFFER_SCREEN_SIZE;
+			float velocity = length(motion);
+			float2 mainaxis = velocity == 0 ? 0 : motion / velocity;
+			float2 otheraxis = float2(mainaxis.y, -mainaxis.x);
+			float2x2 rotation = float2x2(mainaxis, otheraxis);
+
+			tile_uv = (frac(tile_uv) - 0.5) * tile_size;
+			tile_uv = mul(tile_uv, rotation);
+			o = tex2Dlod(ColorInput, i.uv, 0).rgb;
+			float mask = smoothstep(min(velocity, 2.5), min(velocity, 2.5) - 1, abs(tile_uv.y)) * smoothstep(velocity, velocity - 1.0, abs(tile_uv.x));
+
+			o = lerp(o, chroma, mask);
+			break;
+		}
+		case 3: o = Deferred::get_normals(i.uv) * 0.5 + 0.5; break;
+		case 4: o = gradient(Depth::get_linear_depth(i.uv)); break;
 	}	
 }
 #endif
