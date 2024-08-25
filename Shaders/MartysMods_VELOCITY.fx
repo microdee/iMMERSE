@@ -748,7 +748,7 @@ technique MartysMods_Velocity
 {
 #if OPTICAL_FLOW_MATCHING_LAYERS == 2
 	pass {VertexShader = MainVS;PixelShader  = CircularHarmonicsPrevPS;  RenderTarget0 = OldCircularHarmonicsPyramidPrev0; RenderTarget1 = OldCircularHarmonicsPyramidPrev1; }	
-#endifgg
+#endif
     pass {VertexShader = MainVS;PixelShader = WriteFeaturePS; RenderTarget = OldFeatureLayerPyramid; } 
 #if OPTICAL_FLOW_MATCHING_LAYERS == 2
 	pass {VertexShader = MainVS;PixelShader  = CircularHarmonicsPS;  RenderTarget0 = OldCircularHarmonicsPyramidCurr0; RenderTarget1 = OldCircularHarmonicsPyramidCurr1; }
