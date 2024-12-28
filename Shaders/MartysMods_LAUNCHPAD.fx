@@ -50,9 +50,17 @@
 uniform int OPTICAL_FLOW_RES <
 	ui_type = "combo";
     ui_label = "Flow Resolution";
-	ui_items = "Half Resolution\0Full Resolution\0";
+	ui_items = "Quarter Resolution\0Half Resolution\0Full Resolution\0";
 	ui_tooltip = "Higher resolution vectors are more accurate but cost more performance.";
-    ui_category = "OPTICAL FLOW";
+    ui_category = "Motion Estimation / Optical Flow";
+> = 0;
+
+uniform int OPTICAL_FLOW_Q <
+	ui_type = "combo";
+    ui_label = "Flow Quality";
+	ui_items = "Low\0Medium\0High\0";
+	ui_tooltip = "Higher settings produce more accurate results, at a performance cost.";
+	ui_category = "Motion Estimation / Optical Flow";
 > = 0;
 
 uniform bool ENABLE_SMOOTH_NORMALS <	
@@ -158,8 +166,17 @@ uniform float4 tempF6 <
     ui_max = 100.0;
 > = float4(1,1,1,1);
 
+uniform float4 tempF7 <
+    ui_type = "drag";
+    ui_min = -100.0;
+    ui_max = 100.0;
+> = float4(1,1,1,1);
+
 uniform bool debug_key_down < source = "key"; keycode = 0x46; mode = ""; >;
+
+uniform bool USE_SIMPLE_MIP_PYRAMID <  > = false;
 */
+
 /*=============================================================================
 	Textures, Samplers, Globals, Structs
 =============================================================================*/
@@ -179,18 +196,26 @@ sampler DepthInput  { Texture = DepthInputTex; };
 #include ".\MartysMods\mmx_qmc.fxh"
 #include ".\MartysMods\mmx_camera.fxh"
 #include ".\MartysMods\mmx_deferred.fxh"
+#include ".\MartysMods\mmx_texture.fxh"
+
+//todo wrap behind compute macro
+namespace Deferred
+{
+	storage stNormalsTexV3 { Texture = NormalsTexV3;};
+}
 
 uniform uint FRAMECOUNT < source = "framecount"; >;
 uniform float FRAMETIME < source = "frametime"; >;
 
-//don't touch, slight changes can have catastrophic effects on performance
-#define POOL_RADIUS 	5.0//10 * tempF1.x //10.0 * step(0, tempF1.x)
-#define UPSCALE_RADIUS  1.5//2.5 * tempF1.y//2.5 * step(0, tempF1.x)
+texture MotionTexNewA       { Width = BUFFER_WIDTH >> 3;   Height = BUFFER_HEIGHT >> 3;   Format = RGBA32F; MipLevels = 5;};
+sampler sMotionTexNewA      { Texture = MotionTexNewA;   MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
+texture MotionTexNewB       { Width = BUFFER_WIDTH >> 3;   Height = BUFFER_HEIGHT >> 3;   Format = RGBA32F; MipLevels = 5;};
+sampler sMotionTexNewB      { Texture = MotionTexNewB;   MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
 
-texture MotionTexNewA               { Width = BUFFER_WIDTH >> 3;   Height = BUFFER_HEIGHT >> 3;   Format = RGBA16F;};
-sampler sMotionTexNewA              { Texture = MotionTexNewA;   MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
-texture MotionTexNewB               { Width = BUFFER_WIDTH >> 3;   Height = BUFFER_HEIGHT >> 3;   Format = RGBA16F;};
-sampler sMotionTexNewB              { Texture = MotionTexNewB;  MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
+texture MotionTexUpscale    { Width = BUFFER_WIDTH >> 2;   Height = BUFFER_HEIGHT >> 2;   Format = RGBA16F;};
+sampler sMotionTexUpscale   { Texture = MotionTexUpscale;  MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
+texture MotionTexUpscale2   { Width = BUFFER_WIDTH >> 1;   Height = BUFFER_HEIGHT >> 1;   Format = RGBA16F;};
+sampler sMotionTexUpscale2  { Texture = MotionTexUpscale2;  MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
 
 //Yes I know you like to optimize blue noise away in favor for some shitty PRNG function, don't.
 texture BlueNoiseJitterTex     < source = "iMMERSE_bluenoise.png"; > { Width = 32; Height = 32; Format = RGBA8; };
@@ -200,8 +225,8 @@ sampler	sBlueNoiseJitterTex   { Texture = BlueNoiseJitterTex; AddressU = WRAP; A
 #define sMotionTexIntermediateTex0 			Deferred::sMotionVectorsTex
 
 //curr in x, prev in y
-#if __RENDERER__ >= RENDERER_D3D10
 texture FeaturePyramidLevel0   { Width = BUFFER_WIDTH;   	  Height = BUFFER_HEIGHT;        Format = RG8; };
+storage stFeaturePyramidLevel0  { Texture = FeaturePyramidLevel0;};
 texture FeaturePyramidLevel1   { Width = BUFFER_WIDTH >> 1;   Height = BUFFER_HEIGHT >> 1;   Format = RG16F;};
 texture FeaturePyramidLevel2   { Width = BUFFER_WIDTH >> 2;   Height = BUFFER_HEIGHT >> 2;   Format = RG16F;};
 texture FeaturePyramidLevel3   { Width = BUFFER_WIDTH >> 3;   Height = BUFFER_HEIGHT >> 3;   Format = RG16F;};
@@ -217,19 +242,6 @@ sampler sFeaturePyramidLevel4  { Texture = FeaturePyramidLevel4; AddressU = MIRR
 sampler sFeaturePyramidLevel5  { Texture = FeaturePyramidLevel5; AddressU = MIRROR; AddressV = MIRROR; };
 sampler sFeaturePyramidLevel6  { Texture = FeaturePyramidLevel6; AddressU = MIRROR; AddressV = MIRROR; };
 sampler sFeaturePyramidLevel7  { Texture = FeaturePyramidLevel7; AddressU = MIRROR; AddressV = MIRROR; };
-#else //fewer textures that still need to cover a wide range, so we use a pyramid with 3x3 reduction instead of 2x2
-texture FeaturePyramidLevel0   { Width = BUFFER_WIDTH;   	Height = BUFFER_HEIGHT;   Format = RG8; };
-texture FeaturePyramidLevel1   { Width = BUFFER_WIDTH/3;   	Height = BUFFER_HEIGHT/3;   Format = RG16F;};
-texture FeaturePyramidLevel2   { Width = BUFFER_WIDTH/9;   	Height = BUFFER_HEIGHT/9;   Format = RG16F;};
-texture FeaturePyramidLevel3   { Width = BUFFER_WIDTH/27;   Height = BUFFER_HEIGHT/27;  Format = RG16F;};
-texture FeaturePyramidLevel4   { Width = BUFFER_WIDTH/81;   Height = BUFFER_HEIGHT/81;  Format = RG16F;};
-
-sampler sFeaturePyramidLevel0  { Texture = FeaturePyramidLevel0; AddressU = MIRROR; AddressV = MIRROR; }; 
-sampler sFeaturePyramidLevel1  { Texture = FeaturePyramidLevel1; AddressU = MIRROR; AddressV = MIRROR; };
-sampler sFeaturePyramidLevel2  { Texture = FeaturePyramidLevel2; AddressU = MIRROR; AddressV = MIRROR; };
-sampler sFeaturePyramidLevel3  { Texture = FeaturePyramidLevel3; AddressU = MIRROR; AddressV = MIRROR; };
-sampler sFeaturePyramidLevel4  { Texture = FeaturePyramidLevel4; AddressU = MIRROR; AddressV = MIRROR; };
-#endif
 
 texture DepthLowresPacked          { Width = BUFFER_WIDTH/3;   Height = BUFFER_HEIGHT/3;   Format = RG16F; };
 sampler sDepthLowresPacked         { Texture = DepthLowresPacked; MipFilter=POINT; MagFilter=POINT; MinFilter=POINT;}; 
@@ -259,19 +271,88 @@ struct CSIN
 //                                                                      
 //                                            o                         
 
-static float2 block_kernel[13] = 
+static float2 block_kernel[17] = 
 {
 	float2(0,  0), float2( 0, -1), float2( 0,  1), float2(-1,  0),	
 	float2(1,  0), float2( 0, -2), float2( 0,  2), float2(-2,  0),	
 	float2(2,  0), float2(-2, -2), float2( 2,  2), float2(-2,  2),	
-	float2(2, -2)/*, 
+	float2(2, -2), 
 	float2(0, -4), float2( 0,  4), float2(-4,  0),	
-	float2(4,  0)*/
+	float2(4,  0)
 };
+
+static float2 lstar_kernel[16] = 
+{
+	float2(0.106, 0.141),
+	float2(0.436, 0.030),
+	float2(0.892, 0.106),
+	float2(0.636, 0.215),
+	float2(0.350, 0.287),
+	float2(0.224, 0.402),
+	float2(0.788, 0.359),
+	float2(0.526, 0.471),
+	float2(0.039, 0.575),
+	float2(0.959, 0.563),
+	float2(0.302, 0.706),
+	float2(0.709, 0.649),
+	float2(0.596, 0.970),
+	float2(0.143, 0.859),
+	float2(0.420, 0.968),
+	float2(0.852, 0.894)
+};
+
+static const float2 golden_kernel[17] = 
+{
+	float2(0, 0), 
+	float2(-0.184342, 0.168873), 
+	float2(0.0309096, -0.3522), 
+	float2(0.263462, 0.343639), 
+	float2(-0.492357, -0.0870908), 
+	float2(0.471673, -0.30004), 
+	float2(-0.158974, 0.591377), 
+	float2(-0.304862, -0.586992), 
+	float2(0.664201, 0.242564), 
+	float2(-0.693259, 0.286168), 
+	float2(0.335079, -0.716046), 
+	float2(0.248153, 0.791151), 
+	float2(-0.749296, -0.43423), 
+	float2(0.880363, -0.193547), 
+	float2(-0.537983, 0.765228), 
+	float2(-0.124431, -0.960217), 
+	float2(0.76465, 0.644446)
+};
+
+static float2 star_kernel[13] = 
+{
+	float2(0, 0),
+	//inner ring
+	float2(-1, -2),
+	float2(1, -2),
+	float2(2, 0),
+	float2(1, 2),
+	float2(-1, 2),
+	float2(-2, 0),
+	//outer ring
+	float2(-3, -2),
+	float2(0,-4),
+	float2(3, -2),
+	float2(3, 2),
+	float2(0, 4),
+	float2(-3, 2)
+};
+
 
 /*=============================================================================
 	Functions
 =============================================================================*/
+
+float hash11(float p)
+{
+    p = frac(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return frac(p);
+}
 
 float get_prev_depth(float2 uv)
 {
@@ -283,13 +364,12 @@ float get_curr_depth(float2 uv)
 	return tex2Dlod(sDepthLowresPacked, uv, 0).x;
 }
 
-#if __RENDERER__ >= RENDERER_D3D10
-
 float2 downsample_feature(sampler s, float2 uv)
 {
 	float2 res = 0;	
-	float2 texelsize = rcp(tex2Dsize(s));
+	float2 texelsize = rcp(tex2Dsize(s));	
 	float wsum = 0;
+#if 0
 	for(int x = 0; x < 6; x++)
 	for(int y = 0; y < 6; y++)
 	{
@@ -299,6 +379,34 @@ float2 downsample_feature(sampler s, float2 uv)
 		res += g * tex2D(s, uv + offs * texelsize).rg;
 		wsum += g;
 	}
+#else
+	[unroll]for(int x = -1; x <= 1; x++)
+	[unroll]for(int y = -1; y <= 1; y++)
+	{
+		float2 offs = float2(x, y) * 2;
+
+		float2 offs_tl = offs + float2(-0.5, -0.5);
+		float2 offs_tr = offs + float2( 0.5, -0.5);
+		float2 offs_bl = offs + float2(-0.5,  0.5);
+		float2 offs_br = offs + float2( 0.5,  0.5);
+
+		float4 g;
+		g.x = dot(offs_tl, offs_tl);
+		g.y = dot(offs_tr, offs_tr);
+		g.z = dot(offs_bl, offs_bl);
+		g.w = dot(offs_br, offs_br);
+		g = exp(-g*0.1);
+		float tg = dot(g, 1);
+		offs = (offs_tl * g.x + offs_tr * g.y + offs_bl * g.z + offs_br * g.w) / tg;
+	
+
+		//float tg = exp(-dot(offs, offs) * 0.1);
+		res += tg * tex2Dlod(s, uv + offs * texelsize, 0).rg;
+		wsum += tg;
+	}
+#endif
+	
+
 	return res / wsum;	
 }
 
@@ -310,31 +418,6 @@ void DownsampleFeaturePS5(in VSOUT i, out float2 o : SV_Target0){o = downsample_
 void DownsampleFeaturePS6(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature(sFeaturePyramidLevel5, i.uv);}
 void DownsampleFeaturePS7(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature(sFeaturePyramidLevel6, i.uv);}
 
-#else 
-
-float2 downsample_feature_tri(sampler s, float2 uv)
-{
-	float2 res = 0;	
-	float2 texelsize = rcp(tex2Dsize(s));
-	float wsum = 0;
-	for(int x = -6; x <= 6; x++)
-	for(int y = -6; y <= 6; y++)
-	{
-		float2 offs = float2(x, y); 
-		float g = exp(-dot(offs, offs) * 0.03);
-		res += g * tex2D(s, uv + offs * texelsize).rg;
-		wsum += g;
-	}
-	return res / wsum;	
-}
-
-void DownsampleFeatureTriPS1(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature_tri(sFeaturePyramidLevel0, i.uv);}
-void DownsampleFeatureTriPS2(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature_tri(sFeaturePyramidLevel1, i.uv);}
-void DownsampleFeatureTriPS3(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature_tri(sFeaturePyramidLevel2, i.uv);}
-void DownsampleFeatureTriPS4(in VSOUT i, out float2 o : SV_Target0){o = downsample_feature_tri(sFeaturePyramidLevel3, i.uv);}
-
-#endif
-
 float3 get_jitter_blue(in int2 pos)
 {
 	return tex2Dfetch(sBlueNoiseJitterTex, pos % 32).xyz;
@@ -343,7 +426,13 @@ float3 get_jitter_blue(in int2 pos)
 float loss(float a, float b)
 {
 	float t = a - b;
-	return t*t;//abs(t); //SAD	
+	return abs(t); //SAD
+}
+
+float3 loss_grad(float3 a, float b)
+{
+	float3 t = a - b;
+	return abs(t); //SAD
 }
 
 struct AdamOptimizer
@@ -355,8 +444,7 @@ struct AdamOptimizer
 	float lr;
 };
 
-
-AdamOptimizer init_adam()
+AdamOptimizer init_adam(int T)
 {
 	AdamOptimizer a;
 	a.m = a.v = 0;
@@ -366,7 +454,6 @@ AdamOptimizer init_adam()
 	a.beta1 = 0.9;
 	a.beta2 = 0.999;
 	a.lr = 0.000625;
-
 	return a;
 }
 
@@ -379,201 +466,187 @@ float2 update_adam(inout AdamOptimizer a, float2 grad)
 	a.beta1decayed *= a.beta1;
 	a.beta2decayed *= a.beta2;
 
+	{
+		a.beta1decayed = 0;
+		a.beta2decayed = 0;
+	}
+
 	float2 mhat = a.m / (1 - a.beta1decayed);
 	float vhat  = a.v / (1 - a.beta2decayed);
 
-	return a.lr * mhat / (sqrt(vhat) + a.epsilon);
+	mhat *= 0.2;
+	//return a.lr * mhat / (sqrt(vhat) + a.epsilon);
+	return a.lr * (mhat * rsqrt(max(vhat, a.epsilon)));
 }
 
-float4 gradient_block_matching(sampler s_feature, VSOUT i, int level, float4 coarse_layer, const int blocksize)
+float4 gradient_block_matching_new(sampler s_feature, sampler s_flow, float2 uv, int level, const int blocksize)
 {	
-	float2 texelsize = rcp(tex2Dsize(s_feature));	
+	float2 texelsize = rcp(tex2Dsize(s_feature));
 	float2 search_scale = texelsize;
-	float2 total_motion = coarse_layer.xy;
 
-	float2 m = 0;
+	float level_fi = float(level / 7.0); //0 to 1
+
+	int num_steps = level < 2 ? 4 : 8;
+	num_steps *= 1 + OPTICAL_FLOW_Q;
+
+	float2 deltax = texelsize * float2(0.01, 0);
+	float2 deltay = texelsize * float2(0, 0.01);
+
+	//get local block data
 	float local_block[13];
 
-	float3 SAD = 0; //center, +dx, +dy
-	float2 deltax = texelsize * float2(0.0625, 0);
-	float2 deltay = texelsize * float2(0, 0.0625);
+	[unroll]
+	for(uint k = 0; k < blocksize; k++) //always fetch it completely
+	{
+		float2 tuv = uv + star_kernel[k] * search_scale;
+		local_block[k] = tex2Dlod(s_feature, tuv, 0).x;
+	}	
 
+	float4 coarse_layer = 0;//tex2D(s_flow, uv);	
+
+	//if we're not the first pass, do some neighbour pooling to get a better initial guess
+	[branch]
+	if(level < 7)
+	{
+		coarse_layer = tex2Dlod(s_flow, uv, 0);
+		float best_sad = 0;
+
+		[unroll]
+		for(uint k = 0; k < blocksize; k++)
+		{
+			float2 tuv = uv + coarse_layer.xy + star_kernel[k] * search_scale;
+			best_sad += loss(local_block[k], tex2Dlod(s_feature, tuv, 0).y);	
+		}
+
+		float2 motion_texelsize = rcp(tex2Dsize(s_flow));	
+		motion_texelsize = max(motion_texelsize, texelsize);
+		int2 sector_offs[4] = {int2(-1, -2), int2(-2, 0), int2(1, -1), int2(0, 1)};
+		[unroll]
+		for(int sec = 0; sec < 4; sec++)
+		{
+			float2 flows[4];
+			flows[0] = tex2Dlod(s_flow, uv + motion_texelsize * (sector_offs[sec] + float2(0, 0)), 0).xy;
+			flows[1] = tex2Dlod(s_flow, uv + motion_texelsize * (sector_offs[sec] + float2(1, 0)), 0).xy;
+			flows[2] = tex2Dlod(s_flow, uv + motion_texelsize * (sector_offs[sec] + float2(0, 1)), 0).xy;
+			flows[3] = tex2Dlod(s_flow, uv + motion_texelsize * (sector_offs[sec] + float2(1, 1)), 0).xy;
+
+			float3 median = float3(0, 0, 1e10);
+			
+			[unroll]for(int j = 0; j < 4; j++)
+			{
+				float diffsum = 0;
+				diffsum += distance(flows[j], flows[0]);
+				diffsum += distance(flows[j], flows[1]);
+				diffsum += distance(flows[j], flows[2]);
+				diffsum += distance(flows[j], flows[3]);
+
+				median = diffsum < median.z ? float3(flows[j], diffsum) : median;	
+			}
+
+			median.z = 0; //now loss
+
+			[loop]
+			for(uint k = 0; k < blocksize; k++)
+			{
+				float2 tuv = uv + median.xy + star_kernel[k] * search_scale;
+				median.z += loss(local_block[k], tex2Dlod(s_feature, tuv, 0).y);
+				if(median.z > best_sad) break;
+			}
+
+			[branch]
+			if(median.z < best_sad)
+			{
+				best_sad = median.z;
+				coarse_layer.xy = median.xy;
+			}			
+		}
+	}
+	
+	//once found, proceed
+	float2 total_motion = coarse_layer.xy;
+	
+	float3 SAD = 0; //center, +dx, +dy
+	float2 texturesize = tex2Dsize(s_feature);	
+
+	//read local gradient
 	[unroll]
 	for(uint k = 0; k < blocksize; k++)
-	{
-		float2 tuv = i.uv + block_kernel[k] * search_scale;
-
-		float g = tex2Dlod(s_feature, tuv, 0).x;
-		float f;	
-
-		f = tex2Dlod(s_feature, tuv + total_motion, 0).y;
+	{		
+		float2 tuv = uv + star_kernel[k] * search_scale;
+		float g = local_block[k];
+		float f;
+		f = tex2Dlod(s_feature, tuv + total_motion,          0).y;
 		SAD.x += loss(f, g);
 		f = tex2Dlod(s_feature, tuv + total_motion + deltax, 0).y;		
 		SAD.y += loss(f, g);
 		f = tex2Dlod(s_feature, tuv + total_motion + deltay, 0).y;
 		SAD.z += loss(f, g);
+    }
 
-		local_block[k] = g;
-
-	}	
-	
-	m /= blocksize;
-
-	AdamOptimizer adam = init_adam();
 	float2 grad = (SAD.yz - SAD.x) / float2(deltax.x, deltay.y);
+	AdamOptimizer adam = init_adam(num_steps);
 
 	float2 local_motion = 0;
 	float2 best_local_motion = 0;
 	float  best_SAD = SAD.x;
+	adam.lr *= 1.0 + level;	
+	adam.lr *= 0.5;
+	adam.lr /= 1.0 + OPTICAL_FLOW_Q;
+	float2 local_motion_prev = local_motion;
 	
-	int num_steps = 24;
-	int did_not_improve_score = 0;
-
+	int fails = 0;
+	int max_fails = 4 * (1 + OPTICAL_FLOW_Q);
 	[loop]
-	while(num_steps-- > 0 && did_not_improve_score < 2)
-	{
-		local_motion -= update_adam(adam, grad);
+	while(num_steps-- >= 0 && fails < max_fails)
+	{		
+		//nesterov momentum
+		float2 curr_grad_step = update_adam(adam, grad);
+
+		if(maxc(abs(curr_grad_step) * BUFFER_SCREEN_SIZE) < 0.1) 
+			break;
+
+		local_motion = local_motion_prev - curr_grad_step;
+		local_motion_prev = local_motion;
+	
+		local_motion -= curr_grad_step;//look ahead using curr gradient
 		SAD = 0;
-		m = 0;
 
 		[unroll]
 		for(uint k = 0; k < blocksize; k++)
 		{
-			float2 tuv = i.uv + total_motion + local_motion + block_kernel[k] * search_scale;
-
+			float2 tuv = uv + total_motion + local_motion + star_kernel[k] * search_scale;
 			float g = local_block[k];
-			float f;
 
+			float f;	
 			f = tex2Dlod(s_feature, tuv, 0).y;	
 			SAD.x += loss(f, g);
 			f = tex2Dlod(s_feature, tuv + deltax, 0).y;
 			SAD.y += loss(f, g);
 			f = tex2Dlod(s_feature, tuv + deltay, 0).y;
 			SAD.z += loss(f, g);
-
-			m += float2(g, g * g);
-		}
+		}		
 
 		[flatten]
 		if(SAD.x < best_SAD)
 		{
 			best_SAD = SAD.x;
 			best_local_motion = local_motion;
-			did_not_improve_score = 0;			
+			fails = 0;
 		}
 		else 
 		{
-			did_not_improve_score++;
-		}		
-
-		grad = (SAD.yz - SAD.x) / float2(deltax.x, deltay.y);
+			fails++;
+		}
+		
+		grad = (SAD.yz - SAD.x) / float2(deltax.x, deltay.y);		
 	}
 
 	local_motion = best_local_motion;
 	total_motion += local_motion;
 
-	float variance = abs(m.y - m.x * m.x);
-	m /= blocksize;
-	
-	best_SAD /= blocksize;
-	best_SAD /= max(0.0001, variance);
-
-	float prev_depth_at_motion = get_prev_depth(i.uv + total_motion);
+	float prev_depth_at_motion = get_prev_depth(uv + total_motion);
 	float4 curr_layer = float4(total_motion, prev_depth_at_motion, best_SAD);
 	return curr_layer;
-}
-
-float hash11(float p)
-{
-    p = frac(p * 0.1031);
-    p *= p + 33.33;
-    p *= p + p;
-    return frac(p);
-}
-
-float4 pool_vectors_new(VSOUT i, int level, sampler motion_tex, sampler feature_tex, float radius)
-{	
-	float center_z = get_curr_depth(i.uv);
-	if(level == 0) center_z = Depth::get_linear_depth(i.uv);
-	float3 jitter = get_jitter_blue(i.vpos.xy);
-
-	float2 texelsize = rcp(tex2Dsize(motion_tex));
-
-	float2 kernel_scale = texelsize * radius;
-
-	float4 flow_filtered = 0;
-	float4 flow_reservoir = 0;
-
-	float wsum_filtered = 0;
-	float wsum_reservoir = 0;
-	float fseed = jitter.z;
-
-	float4 center = tex2Dlod(motion_tex, i.uv, 0);
-	flow_filtered = center * 0.001;
-	wsum_filtered = 0.001;
-
-	[loop]for(int x = -2; x <= 1; x++)
-	[loop]for(int y = -2; y <= 1; y++)
-	{
-		float2 offs = float2(x, y) + jitter.xy;
-		float2 sample_uv = i.uv + offs * kernel_scale;		
-
-		if(!Math::inside_screen(sample_uv)) continue;
-
-		float4 flow = tex2Dlod(motion_tex, sample_uv, 0);
-
-		float match_error        = flow.w * 8000.0;
-		float flow_length_pixels = dot(flow.xy * BUFFER_ASPECT_RATIO, flow.xy * BUFFER_SCREEN_SIZE);
-
-		float sample_z = get_curr_depth(sample_uv);
-		float dzc = abs(center_z - sample_z) / max(1e-5, min(center_z, sample_z));
-		float dzp = abs(center_z - flow.z) / max(1e-5, min(center_z, flow.z));
-
-		float wfactor = (dzc * dzc * 4 + dzp * dzp) * 32.0 + match_error * match_error * 4;
-		float w = exp2(-wfactor);
-		w = max(w, 0.001);
-
-		flow_filtered += flow * w;
-		wsum_filtered += w;	
-
-		//clean weight
-		w = exp2(-wfactor);
-		w *= w;
-	
-		wsum_reservoir += w;			
-
-		float rand = hash11(fseed * 161.88 + sin(w * 142.33));
-		fseed = rand;
-
-		if(rand * wsum_reservoir < w)
-			flow_reservoir = flow;
-	}
-
-	flow_filtered /= max(1e-3, wsum_filtered);
-
-	if(level > 0.5)
-	{	
-		texelsize = rcp(tex2Dsize(feature_tex));	
-		float loss_avg = 0;	
-		float loss_res = 0;	
-		int num_samples = 9;
-
-		[loop]
-		for(uint k = 0; k < num_samples; k++)
-		{
-			float2 kernel_uv = i.uv + block_kernel[k] * texelsize;
-			float f = tex2Dlod(feature_tex, kernel_uv, 0).x;
-			float g1 = tex2Dlod(feature_tex, kernel_uv + flow_filtered.xy, 0).y;
-			float g2 = tex2Dlod(feature_tex, kernel_uv + flow_reservoir.xy, 0).y;
-			loss_avg += loss(f, g1);
-			loss_res += loss(f, g2);
-		}
-
-		if(loss_res < loss_avg)
-			flow_filtered = flow_reservoir;
-	}
-
-	return flow_filtered;
 }
 
 float3 showmotion(float2 motion)
@@ -581,7 +654,7 @@ float3 showmotion(float2 motion)
 	float angle = atan2(motion.y, motion.x);
 	float dist = length(motion);
 	float3 rgb = saturate(3 * abs(2 * frac(angle / 6.283 + float3(0, -1.0/3.0, 1.0/3.0)) - 1) - 1);
-	return lerp(0.5, rgb, saturate(log(1 + dist * 400.0  / FRAMETIME)));//normalize by frametime such that we don't need to adjust visualization intensity all the time
+	return lerp(0.5, rgb, saturate(log(1 + dist * 1000.0  /* / FRAMETIME */)));//normalize by frametime such that we don't need to adjust visualization intensity all the time
 }
 
 //turbo colormap fit, turned into MADD form
@@ -622,23 +695,7 @@ void WriteDepthFeaturePS(in VSOUT i, out float2 o : SV_Target0)
 
 void WriteFeaturePS(in VSOUT i, out float4 o : SV_Target0)
 {	
-	float4 feature_data = 0;
-#if MIN_MIP > 0
-	const float4 radius = float4(0.7577, -0.7577, 2.907, 0);
-	const float2 weight = float2(0.37487566, -0.12487566);
-	feature_data.rgb =  weight.x * tex2D(ColorInput, i.uv + radius.xx * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.xy * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.yx * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.yy * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv + radius.zw * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv - radius.zw * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv + radius.wz * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv - radius.wz * BUFFER_PIXEL_SIZE).xyz;	
-#else	
-	feature_data.rgb = tex2D(ColorInput, i.uv).rgb;
-#endif	
-
-	o = dot(0.3333, feature_data.rgb);
+	o = dot(0.3333, tex2Dfetch(ColorInput, int2(i.vpos.xy)).rgb);
 	//if(FRAMECOUNT > tex2Dfetch(sStateCounterTex, int2(0, 0)).x + 1) discard;
 }
 
@@ -650,95 +707,152 @@ void WritePrevLowresDepthPS(in VSOUT i, out float2 o : SV_Target0)
 
 void WriteFeaturePS2(in VSOUT i, out float4 o : SV_Target0)
 {	
-	float4 feature_data = 0;
-#if MIN_MIP > 0
-	const float4 radius = float4(0.7577, -0.7577, 2.907, 0);
-	const float2 weight = float2(0.37487566, -0.12487566);
-	feature_data.rgb =  weight.x * tex2D(ColorInput, i.uv + radius.xx * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.xy * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.yx * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.x * tex2D(ColorInput, i.uv + radius.yy * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv + radius.zw * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv - radius.zw * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv + radius.wz * BUFFER_PIXEL_SIZE).xyz;
-	feature_data.rgb += weight.y * tex2D(ColorInput, i.uv - radius.wz * BUFFER_PIXEL_SIZE).xyz;	
-#else	
-	feature_data.rgb = tex2D(ColorInput, i.uv).rgb;
-#endif	
-	feature_data.w = Depth::get_linear_depth(i.uv);	
-
-	o = dot(0.3333, feature_data.rgb);
+	o = dot(0.3333, tex2Dfetch(ColorInput, int2(i.vpos.xy)).rgb);
 	//if(FRAMECOUNT > tex2Dfetch(sStateCounterTex, int2(0, 0)).x) discard;
 }
 
-#if __RENDERER__ >= RENDERER_D3D10
+void BlockMatchingPassPS8(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel7, sMotionTexNewB, i.uv, 7, 7);}
+void BlockMatchingPassPS7(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel6, sMotionTexNewA, i.uv, 6, 7);}
+void BlockMatchingPassPS6(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel5, sMotionTexNewB, i.uv, 5, 7);}
+void BlockMatchingPassPS5(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel4, sMotionTexNewA, i.uv, 4, 7);}
+void BlockMatchingPassPS4(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel3, sMotionTexNewB, i.uv, 3, 7);}
+void BlockMatchingPassPS3(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel2, sMotionTexNewA, i.uv, 2, 7);}
+void BlockMatchingPassPS2(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel1, sMotionTexNewB, i.uv, 1, 13);}
+void BlockMatchingPassPS1(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching_new(sFeaturePyramidLevel0, sMotionTexNewA, i.uv, 0, 13);}
 
-void BlockMatchingPassPS8(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel7, i, 8, 0.0.xxxx, 13);}
-void FilterPass8(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 8, sMotionTexNewA, sFeaturePyramidLevel7, POOL_RADIUS);}
-void BlockMatchingPassPS7(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel6, i, 7, pool_vectors_new(i, 7, sMotionTexNewB, sFeaturePyramidLevel6, POOL_RADIUS), 13);}
-void FilterPass7(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 7, sMotionTexNewA, sFeaturePyramidLevel6, POOL_RADIUS);}
-void BlockMatchingPassPS6(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel5, i, 6, pool_vectors_new(i, 5, sMotionTexNewB, sFeaturePyramidLevel5, POOL_RADIUS), 13);}
-void FilterPass6(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 5, sMotionTexNewA, sFeaturePyramidLevel5, POOL_RADIUS);}
-void BlockMatchingPassPS5(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel4, i, 5, pool_vectors_new(i, 4, sMotionTexNewB, sFeaturePyramidLevel4, POOL_RADIUS), 13);}
-void FilterPass5(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 4, sMotionTexNewA, sFeaturePyramidLevel4, POOL_RADIUS);}
-void BlockMatchingPassPS4(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel3, i, 4, pool_vectors_new(i, 3, sMotionTexNewB, sFeaturePyramidLevel3, POOL_RADIUS), 13);}
-void FilterPass4(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 3, sMotionTexNewA, sFeaturePyramidLevel3, POOL_RADIUS);}
-void BlockMatchingPassPS3(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel2, i, 3, pool_vectors_new(i, 2, sMotionTexNewB, sFeaturePyramidLevel2, POOL_RADIUS), 13);}
-void FilterPass3(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 2, sMotionTexNewA, sFeaturePyramidLevel2, POOL_RADIUS);}
-void BlockMatchingPassPS2(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel1, i, 2, pool_vectors_new(i, 1, sMotionTexNewB, sFeaturePyramidLevel1, POOL_RADIUS), 13);}
-void FilterPass2(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 1, sMotionTexNewA, sFeaturePyramidLevel1, POOL_RADIUS);}
-void BlockMatchingPassPS1(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel0, i, 1, pool_vectors_new(i, 0, sMotionTexNewB, sFeaturePyramidLevel0, POOL_RADIUS), 13);}
-void FilterPass1(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 0, sMotionTexNewA, sFeaturePyramidLevel0, POOL_RADIUS);}
+void UpscaleFlowPS0(in VSOUT i, out float4 o : SV_Target0)
+{
+	if(OPTICAL_FLOW_RES < 1) 
+		discard;
+	o = gradient_block_matching_new(sFeaturePyramidLevel0, sMotionTexNewB, i.uv, 0, 13);
+}
+
+void UpscaleFlowPS1(in VSOUT i, out float4 o : SV_Target0)
+{	
+	if(OPTICAL_FLOW_RES < 2) 
+		discard;
+	o = gradient_block_matching_new(sFeaturePyramidLevel0, sMotionTexUpscale, i.uv, 0, 13);
+}
 
 void CopyToFullres(in VSOUT i, out float4 o : SV_Target0)
 {
-	o = pool_vectors_new(i, 0, sMotionTexNewB, sFeaturePyramidLevel0, UPSCALE_RADIUS);
-	[branch]
-	if(OPTICAL_FLOW_RES == 1) 
-		o = gradient_block_matching(sFeaturePyramidLevel0, i, 0, o, 9);
+	o = 0;
+	if(OPTICAL_FLOW_RES == 0)      o = tex2Dlod(sMotionTexNewB, i.uv, 0);
+	else if(OPTICAL_FLOW_RES == 1) o = tex2Dlod(sMotionTexUpscale, i.uv, 0);
+	else if(OPTICAL_FLOW_RES == 2) o = tex2Dlod(sMotionTexUpscale2, i.uv, 0);
 }
-
-#else
-
-void BlockMatchingPassPS5(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel4, i, 5, 0.0.xxxx, 13);}
-void FilterPass5(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 4, sMotionTexNewA, sFeaturePyramidLevel4, POOL_RADIUS);}
-void BlockMatchingPassPS4(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel3, i, 4, pool_vectors_new(i, 3, sMotionTexNewB, sFeaturePyramidLevel3, POOL_RADIUS), 13);}
-void FilterPass4(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 3, sMotionTexNewA, sFeaturePyramidLevel3, POOL_RADIUS);}
-void BlockMatchingPassPS3(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel2, i, 3, pool_vectors_new(i, 2, sMotionTexNewB, sFeaturePyramidLevel2, POOL_RADIUS), 13);}
-void FilterPass3(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 2, sMotionTexNewA, sFeaturePyramidLevel2, POOL_RADIUS);}
-void BlockMatchingPassPS2(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel1, i, 2, pool_vectors_new(i, 1, sMotionTexNewB, sFeaturePyramidLevel1, POOL_RADIUS), 13);}
-void FilterPass2(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 1, sMotionTexNewA, sFeaturePyramidLevel1, POOL_RADIUS);}
-void BlockMatchingPassPS1(in VSOUT i, out float4 o : SV_Target0){o = gradient_block_matching(sFeaturePyramidLevel0, i, 1, pool_vectors_new(i, 0, sMotionTexNewB, sFeaturePyramidLevel0, POOL_RADIUS), 13);}
-void FilterPass1(in VSOUT i, out float4 o : SV_Target0){o = pool_vectors_new(i, 0, sMotionTexNewA, sFeaturePyramidLevel0, POOL_RADIUS);}
-
-void CopyToFullres(in VSOUT i, out float4 o : SV_Target0)
-{
-	o = pool_vectors_new(i, 0, sMotionTexNewB, sFeaturePyramidLevel0, UPSCALE_RADIUS);
-	[branch]
-	if(OPTICAL_FLOW_RES == 1) 
-		o = gradient_block_matching(sFeaturePyramidLevel0, i, 0, o, 9);
-}
-
-#endif
 
 /*=============================================================================
 	Shader Entry Points - Normals
 =============================================================================*/
 
+//we need 2 pixels padding on each side for the 5x5 spanning kernel
+groupshared float z_tgsm[(32+4)*(32+4)];
+
+void NormalsCS(in CSIN i)
+{
+	int id = i.threadid;
+	if(i.threadid < 18*18)
+	{
+		int2 p = int2(i.threadid % 18, i.threadid / 18);
+		p *= 2;
+		int2 screenpos = i.groupid.xy * 32 + p - 2;
+		float2 uv = saturate((screenpos + 0.75) * BUFFER_PIXEL_SIZE_DLSS);
+
+		float2 corrected_uv = Depth::correct_uv(uv); //fixed for lookup 
+
+#if RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN
+    	corrected_uv.y -= BUFFER_PIXEL_SIZE.y * 0.5;    //shift upwards since gather looks down and right
+    	float4 depth_texels = tex2DgatherR(DepthInput, corrected_uv).wzyx;  
+#else
+    	float4 depth_texels = tex2DgatherR(DepthInput, corrected_uv);
+#endif
+
+	 	depth_texels = Depth::linearize(depth_texels);
+		//WZ
+		//XY
+		z_tgsm[p.x + p.y * (32+4)]           = depth_texels.w;
+		z_tgsm[p.x + p.y * (32+4) + 1]       = depth_texels.z;
+		z_tgsm[p.x + (p.y + 1) * (32+4)]     = depth_texels.x;
+		z_tgsm[p.x + 1 + (p.y + 1) * (32+4)] = depth_texels.y;
+	}
+
+	barrier();
+	if(any(i.dispatchthreadid.xy >= BUFFER_SCREEN_SIZE_DLSS))
+	{
+		return;
+	}
+
+	//XY = 2D offset
+	const int2 dirs[9] = 
+	{
+		int2(-1,-1),//TL
+		int2(0,-1),//T
+		int2(1,-1),//TR
+		int2(1,0),//R
+		int2(1,1),//BR
+		int2(0,1),//B
+		int2(-1,1),//BL
+		int2(-1,0),//L
+		int2(-1,-1)//TL first duplicated at end cuz it might be best pair	
+	};
+
+	int2 tgsm_coord = i.groupthreadid.xy + 2;
+	int tgsm_id = tgsm_coord.x + tgsm_coord.y * (32+4);
+	float2 uv = (i.dispatchthreadid.xy + 0.5) * BUFFER_PIXEL_SIZE_DLSS;	
+
+	float z_center = z_tgsm[tgsm_id];
+	float3 center_pos = Camera::uv_to_proj(uv, Camera::depth_to_z(z_center));
+
+	float2 z_prev;
+	z_prev.x = z_tgsm[tgsm_id + dirs[0].x     + dirs[0].y     * (32+4)];
+	z_prev.y = z_tgsm[tgsm_id + dirs[0].x * 2 + dirs[0].y * 2 * (32+4)];
+
+	float4 best_normal = float4(0,0,0,100000);
+	float4 weighted_normal = 0;
+
+	[unroll]
+	for(int j = 1; j < 9; j++)
+	{
+		float2 z_curr;
+		z_curr.x = z_tgsm[tgsm_id + dirs[j].x     + dirs[j].y     * (32+4)];
+		z_curr.y = z_tgsm[tgsm_id + dirs[j].x * 2 + dirs[j].y * 2 * (32+4)];
+
+		float2 z_guessed = 2 * float2(z_prev.x, z_curr.x) - float2(z_prev.y, z_curr.y);
+		float score = dot(1, abs(z_guessed - z_center));
+	
+		float3 dd_0 = Camera::uv_to_proj(uv + BUFFER_PIXEL_SIZE * dirs[j],     Camera::depth_to_z(z_curr.x)) - center_pos;
+		float3 dd_1 = Camera::uv_to_proj(uv + BUFFER_PIXEL_SIZE * dirs[j - 1], Camera::depth_to_z(z_prev.x)) - center_pos;
+		float3 temp_normal = cross(dd_0, dd_1);
+		float w = rcp(dot(temp_normal, temp_normal));
+		w *= rcp(score * score + exp2(-32.0));
+		weighted_normal += float4(temp_normal, 1) * w;	
+
+		best_normal = score < best_normal.w ? float4(temp_normal, score) : best_normal;
+		z_prev = z_curr;
+	}
+
+	float3 normal = weighted_normal.w < 1.0 ? best_normal.xyz : weighted_normal.xyz;
+	//normal = best_normal.xyz;
+	normal *= rsqrt(dot(normal, normal) + 1e-8);
+	//V2 geom normals to .zw	
+	float2 packed_normal = Math::octahedral_enc(-normal); //fixes bugs in RTGI, normal.z positive gives smaller error :)	
+	tex2Dstore(Deferred::stNormalsTexV3, i.dispatchthreadid.xy, packed_normal.xyxy);
+}
+
 void NormalsPS(in VSOUT i, out float4 o : SV_Target0)
 {
-	//TODO optimize with tex2Dgather? Compute? What about scaled depth buffers? oh man
 	const float2 dirs[9] = 
 	{
-		BUFFER_PIXEL_SIZE * float2(-1,-1),//TL
-		BUFFER_PIXEL_SIZE * float2(0,-1),//T
-		BUFFER_PIXEL_SIZE * float2(1,-1),//TR
-		BUFFER_PIXEL_SIZE * float2(1,0),//R
-		BUFFER_PIXEL_SIZE * float2(1,1),//BR
-		BUFFER_PIXEL_SIZE * float2(0,1),//B
-		BUFFER_PIXEL_SIZE * float2(-1,1),//BL
-		BUFFER_PIXEL_SIZE * float2(-1,0),//L
-		BUFFER_PIXEL_SIZE * float2(-1,-1)//TL first duplicated at end cuz it might be best pair	
+		BUFFER_PIXEL_SIZE_DLSS * float2(-1,-1),//TL
+		BUFFER_PIXEL_SIZE_DLSS * float2(0,-1),//T
+		BUFFER_PIXEL_SIZE_DLSS * float2(1,-1),//TR
+		BUFFER_PIXEL_SIZE_DLSS * float2(1,0),//R
+		BUFFER_PIXEL_SIZE_DLSS * float2(1,1),//BR
+		BUFFER_PIXEL_SIZE_DLSS * float2(0,1),//B
+		BUFFER_PIXEL_SIZE_DLSS * float2(-1,1),//BL
+		BUFFER_PIXEL_SIZE_DLSS * float2(-1,0),//L
+		BUFFER_PIXEL_SIZE_DLSS * float2(-1,-1)//TL first duplicated at end cuz it might be best pair	
 	};
 
 	float z_center = Depth::get_linear_depth(i.uv);
@@ -777,17 +891,17 @@ void NormalsPS(in VSOUT i, out float4 o : SV_Target0)
 	//normal = best_normal.xyz;
 	normal *= rsqrt(dot(normal, normal) + 1e-8);
 	//V2 geom normals to .zw	
-	o = Math::octahedral_enc(-normal).xyxy;//fixes bugs in RTGI, normal.z positive gives smaller error :)
+	o = Math::octahedral_enc(-normal).xyxy;//fixes bugs in RTGI, normal.z positive gives smaller error :)	
 }
 
 //gbuffer halfres for fast filtering
-texture SmoothNormalsTempTex0  { Width = BUFFER_WIDTH/2;   Height = BUFFER_HEIGHT/2;   Format = RGBA16F;  };
+texture SmoothNormalsTempTex0  { Width = BUFFER_WIDTH_DLSS/2;   Height = BUFFER_HEIGHT_DLSS/2;   Format = RGBA16F;  };
 sampler sSmoothNormalsTempTex0 { Texture = SmoothNormalsTempTex0; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT; };
 //gbuffer halfres for fast filtering
-texture SmoothNormalsTempTex1  { Width = BUFFER_WIDTH/2;   Height = BUFFER_HEIGHT/2;   Format = RGBA16F;  };
+texture SmoothNormalsTempTex1  { Width = BUFFER_WIDTH_DLSS/2;   Height = BUFFER_HEIGHT_DLSS/2;   Format = RGBA16F;  };
 sampler sSmoothNormalsTempTex1 { Texture = SmoothNormalsTempTex1; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT;  };
 //high res copy back so we can fetch center tap at full res always
-texture SmoothNormalsTempTex2  < pooled = true; > { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT;   Format = RGBA16;  };
+texture SmoothNormalsTempTex2  < pooled = true; > { Width = BUFFER_WIDTH_DLSS;   Height = BUFFER_HEIGHT_DLSS;   Format = RGBA16;  };
 sampler sSmoothNormalsTempTex2 { Texture = SmoothNormalsTempTex2; MinFilter = POINT; MagFilter = POINT; MipFilter = POINT;  };
 
 void SmoothNormalsMakeGbufPS(in VSOUT i, out float4 o : SV_Target0)
@@ -966,8 +1080,8 @@ void SmoothNormalsPass1PS(in VSOUT i, out float4 o : SV_Target0)
 		float3 p = Camera::uv_to_proj(i.uv);
 		float luma = dot(tex2D(ColorInput, i.uv).rgb, 0.3333);
 
-		float3 e_y = (p - Camera::uv_to_proj(i.uv + BUFFER_PIXEL_SIZE * float2(0, 2)));
-		float3 e_x = (p - Camera::uv_to_proj(i.uv + BUFFER_PIXEL_SIZE * float2(2, 0)));
+		float3 e_y = (p - Camera::uv_to_proj(i.uv + BUFFER_PIXEL_SIZE_DLSS * float2(0, 2)));
+		float3 e_x = (p - Camera::uv_to_proj(i.uv + BUFFER_PIXEL_SIZE_DLSS * float2(2, 0)));
 		e_y = normalize(cross(n, e_y));
 		e_x = normalize(cross(n, e_x));
 
@@ -1092,6 +1206,506 @@ void DebugPS(in VSOUT i, out float3 o : SV_Target0)
 }
 #endif
 
+
+
+float3 srgb_to_AgX(float3 srgb)
+{
+    float3x3 toagx = float3x3(0.842479, 0.0784336, 0.0792237, 
+                              0.042328, 0.8784686, 0.0791661, 
+                              0.042376, 0.0784336, 0.8791430);
+    return mul(toagx, srgb);         
+}
+
+float3 AgX_to_srgb(float3 AgX)
+{   
+    float3x3 fromagx = float3x3(1.19688,  -0.0980209, -0.0990297,
+                               -0.0528969, 1.1519,    -0.0989612,
+                               -0.0529716, -0.0980435, 1.15107);
+    return mul(fromagx, AgX);            
+}
+
+uniform bool ASSUME_SRGB_INPUT <
+    ui_label = "Assume sRGB input";
+    ui_tooltip = "Converts color to linear before converting to HDR.\nDepending on the game color format, this can improve light behavior and blending.";
+    ui_category = "Experimental";
+> = true;
+
+float3 unpack_hdr_rtgi(float3 color)
+{
+    color  = saturate(color);   
+    if(ASSUME_SRGB_INPUT) color = color*0.283799*((2.52405+color)*color);  
+    color = srgb_to_AgX(color);
+    color = color * rcp(1.04 - saturate(color));    
+    return color;
+}
+
+float3 pack_hdr_rtgi(float3 color)
+{
+    color =  1.04 * color * rcp(color + 1.0);   
+    color = AgX_to_srgb(color);    
+    color  = saturate(color);
+    if(ASSUME_SRGB_INPUT) color = 1.14374*(-0.126893*color+sqrt(color));
+    return color;     
+}
+
+float3 cone_overlap(float3 c)
+{
+    float k = 0.4 * 0.33;
+    float2 f = float2(1 - 2 * k, k);
+    float3x3 m = float3x3(f.xyy, f.yxy, f.yyx);
+    return mul(c, m);
+}
+
+float3 cone_overlap_inv(float3 c)
+{
+    float k = 0.4 * 0.33;
+    float2 f = float2(k - 1, k) * rcp(3 * k - 1);
+    float3x3 m = float3x3(f.xyy, f.yxy, f.yyx);
+    return mul(c, m);
+}
+
+#define degamma(_v) ((_v)*0.283799*((2.52405+(_v))*(_v)))
+#define regamma(_v) (1.14374*(-0.126893*(_v)+sqrt(_v)))
+
+#define WHITEPOINT 12.0 //don't change, it has a miniscule impact on the image, but low values will cause whites to be dimmed
+
+float3 sdr_to_hdr(float3 c)
+{ 
+	return unpack_hdr_rtgi(c);    
+}
+
+float3 hdr_to_sdr(float3 c)
+{    
+	return pack_hdr_rtgi(c);    
+}
+
+float get_sdr_luma(float3 c)
+{
+    c = degamma(c);
+    float lum = dot(c, float3(0.2125, 0.7154, 0.0721));
+    lum = regamma(lum);
+    return lum;
+}
+
+#define INTENSITY 1.0
+#define ALBEDO_EXPOSURE_TARGET 		0.3
+#define LAPLACIAN_RESOLUTION_DIV  	4
+
+#define LAPLACIAN_TILE_WIDTH     (BUFFER_WIDTH / LAPLACIAN_RESOLUTION_DIV)
+#define LAPLACIAN_TILE_HEIGHT    (BUFFER_HEIGHT / LAPLACIAN_RESOLUTION_DIV)
+
+//this is really awkward but we cannot use any of the common preprocessor integer log2 macros
+//as the preprocessor runs out of stack space with them. So we have to do it manually like this
+#if LAPLACIAN_TILE_HEIGHT < 128
+    #define LOWEST_MIP  6
+#elif LAPLACIAN_TILE_HEIGHT < 256
+    #define LOWEST_MIP  7
+#elif LAPLACIAN_TILE_HEIGHT < 512
+    #define LOWEST_MIP  8
+#elif LAPLACIAN_TILE_HEIGHT < 1024
+    #define LOWEST_MIP  9
+#elif LAPLACIAN_TILE_HEIGHT < 2048
+    #define LOWEST_MIP  10
+#else 
+    #error "Unsupported resolution"
+#endif
+
+#define TARGET_MIP        ((LOWEST_MIP) - 3)
+#define TARGET_MIP_SCALE  (1 << (TARGET_MIP))
+
+#define ATLAS_TILES_X   2
+#define ATLAS_TILES_Y   2
+
+//rounded up tile resolution such that it can be cleanly divided by 2 TARGET_MIP'th times
+#define ATLAS_TILE_RESOLUTION_X  CEIL_DIV(LAPLACIAN_TILE_WIDTH, TARGET_MIP_SCALE) * TARGET_MIP_SCALE
+#define ATLAS_TILE_RESOLUTION_Y  CEIL_DIV(LAPLACIAN_TILE_HEIGHT, TARGET_MIP_SCALE) * TARGET_MIP_SCALE
+
+#define ATLAS_RESOLUTION_X ((ATLAS_TILE_RESOLUTION_X) * (ATLAS_TILES_X))
+#define ATLAS_RESOLUTION_Y ((ATLAS_TILE_RESOLUTION_Y) * (ATLAS_TILES_Y))
+
+texture LaunchpadExposureAtlasL0  { Width = (ATLAS_RESOLUTION_X)>>0; Height = (ATLAS_RESOLUTION_Y)>>0; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL0    { Width = (ATLAS_RESOLUTION_X)>>0; Height = (ATLAS_RESOLUTION_Y)>>0; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL0 { Texture = LaunchpadExposureAtlasL0;};
+sampler sLaunchpadWeightAtlasL0   { Texture = LaunchpadWeightAtlasL0;};
+#if TARGET_MIP >= 1
+texture LaunchpadExposureAtlasL1  { Width = (ATLAS_RESOLUTION_X)>>1; Height = (ATLAS_RESOLUTION_Y)>>1; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL1    { Width = (ATLAS_RESOLUTION_X)>>1; Height = (ATLAS_RESOLUTION_Y)>>1; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL1 { Texture = LaunchpadExposureAtlasL1;};
+sampler sLaunchpadWeightAtlasL1   { Texture = LaunchpadWeightAtlasL1;};
+#endif
+#if TARGET_MIP >= 2
+texture LaunchpadExposureAtlasL2  { Width = (ATLAS_RESOLUTION_X)>>2; Height = (ATLAS_RESOLUTION_Y)>>2; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL2    { Width = (ATLAS_RESOLUTION_X)>>2; Height = (ATLAS_RESOLUTION_Y)>>2; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL2 { Texture = LaunchpadExposureAtlasL2;};
+sampler sLaunchpadWeightAtlasL2   { Texture = LaunchpadWeightAtlasL2;};
+#endif
+#if TARGET_MIP >= 3
+texture LaunchpadExposureAtlasL3  { Width = (ATLAS_RESOLUTION_X)>>3; Height = (ATLAS_RESOLUTION_Y)>>3; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL3    { Width = (ATLAS_RESOLUTION_X)>>3; Height = (ATLAS_RESOLUTION_Y)>>3; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL3 { Texture = LaunchpadExposureAtlasL3;};
+sampler sLaunchpadWeightAtlasL3   { Texture = LaunchpadWeightAtlasL3;};
+#endif
+#if TARGET_MIP >= 4
+texture LaunchpadExposureAtlasL4  { Width = (ATLAS_RESOLUTION_X)>>4; Height = (ATLAS_RESOLUTION_Y)>>4; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL4    { Width = (ATLAS_RESOLUTION_X)>>4; Height = (ATLAS_RESOLUTION_Y)>>4; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL4 { Texture = LaunchpadExposureAtlasL4;};
+sampler sLaunchpadWeightAtlasL4   { Texture = LaunchpadWeightAtlasL4;};
+#endif
+#if TARGET_MIP >= 5
+texture LaunchpadExposureAtlasL5  { Width = (ATLAS_RESOLUTION_X)>>5; Height = (ATLAS_RESOLUTION_Y)>>5; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL5    { Width = (ATLAS_RESOLUTION_X)>>5; Height = (ATLAS_RESOLUTION_Y)>>5; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL5 { Texture = LaunchpadExposureAtlasL5;};
+sampler sLaunchpadWeightAtlasL5   { Texture = LaunchpadWeightAtlasL5;};
+#endif
+#if TARGET_MIP >= 6
+texture LaunchpadExposureAtlasL6  { Width = (ATLAS_RESOLUTION_X)>>6; Height = (ATLAS_RESOLUTION_Y)>>6; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL6    { Width = (ATLAS_RESOLUTION_X)>>6; Height = (ATLAS_RESOLUTION_Y)>>6; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL6 { Texture = LaunchpadExposureAtlasL6;};
+sampler sLaunchpadWeightAtlasL6   { Texture = LaunchpadWeightAtlasL6;};
+#endif
+#if TARGET_MIP >= 7
+texture LaunchpadExposureAtlasL7  { Width = (ATLAS_RESOLUTION_X)>>7; Height = (ATLAS_RESOLUTION_Y)>>7; Format = RGBA16F;};
+texture LaunchpadWeightAtlasL7    { Width = (ATLAS_RESOLUTION_X)>>7; Height = (ATLAS_RESOLUTION_Y)>>7; Format = RGBA16F;};
+sampler sLaunchpadExposureAtlasL7 { Texture = LaunchpadExposureAtlasL7;};
+sampler sLaunchpadWeightAtlasL7   { Texture = LaunchpadWeightAtlasL7;};
+#endif
+
+texture LaunchpadCollapsedExposurePyramidTex { Width = ATLAS_TILE_RESOLUTION_X; Height = ATLAS_TILE_RESOLUTION_Y; Format = RG16F;};
+sampler sLaunchpadCollapsedExposurePyramidTex { Texture = LaunchpadCollapsedExposurePyramidTex;};
+
+void InitPyramidAtlasPS(in VSOUT i, out PSOUT2 o)
+{
+    //figure out 1D tile ID
+    int2 tile_id = floor(i.uv * float2(ATLAS_TILES_X, ATLAS_TILES_Y));
+    int tile_id_1d = tile_id.y * ATLAS_TILES_X + tile_id.x;
+
+    //now, figure out remapping values per each tile
+    //x4 -> channels
+    int4 curr_channel_idx = tile_id_1d * 4 + int4(0, 1, 2, 3); //0 to 23
+    float num_channels = ATLAS_TILES_X * ATLAS_TILES_Y * 4;
+    float exposure_spread = 1.0;    
+
+    float4 exposure_bias = (curr_channel_idx - (num_channels - 1) * 0.5) * exposure_spread;//centered, i.e. -7.5 ... 7.5
+
+    float2 uv = frac(i.uv * float2(ATLAS_TILES_X, ATLAS_TILES_Y));
+    float3 c = sdr_to_hdr(tex2D(ColorInput, uv).rgb);
+
+	c = 0;
+	for(int x = 0; x < 2; x++)
+	for(int y = 0; y < 2; y++)
+	{
+		float2 p = floor(i.vpos.xy) * 4 + float2(x, y) * 2;
+		p += 1.0;
+		p *= BUFFER_PIXEL_SIZE;
+		c += tex2D(ColorInput, uv).rgb;
+	}
+
+	c /= 4.0;
+	c = sdr_to_hdr(c);
+
+    float3 exposed[4];
+    exposed[0] = hdr_to_sdr(c * exp2(exposure_bias.x));
+    exposed[1] = hdr_to_sdr(c * exp2(exposure_bias.y));
+    exposed[2] = hdr_to_sdr(c * exp2(exposure_bias.z)); 
+    exposed[3] = hdr_to_sdr(c * exp2(exposure_bias.w));  
+
+    float4 luminances;
+    luminances.x = get_sdr_luma(exposed[0]);
+    luminances.y = get_sdr_luma(exposed[1]);
+    luminances.z = get_sdr_luma(exposed[2]);
+    luminances.w = get_sdr_luma(exposed[3]); 
+
+    o.t0 = exposure_bias;
+    o.t1 = exp(-(luminances-0.5)*(luminances-0.5)*32.0); 
+}
+
+//so apparently, no matter what filter I use, I can just go in log2 steps
+//and it's fine. As the filter footprint doubles each pass, it will always make the same
+//of a structure twice a given size and one pass more.
+void tile_downsample(sampler s0, sampler s1, float2 uv, out float4 res0, out float4 res1)
+{
+    float2 num_tiles = float2(ATLAS_TILES_X, ATLAS_TILES_Y);
+
+    float4 boundaries;
+    boundaries.xy = floor(uv * num_tiles) / num_tiles;
+    boundaries.zw = boundaries.xy + rcp(num_tiles);    
+
+    float2 texelsize = rcp(tex2Dsize(s0, 0));
+
+    const float sigma = 4.0;
+    const int samples = ceil(2 * sigma);
+    const float g = 0.5 * rcp(sigma * sigma);
+
+    res0 = res1 = 0;
+    float weightsum = 0;
+
+    [loop]for(int x = -samples; x < samples; x++)
+    [loop]for(int y = -samples; y < samples; y++)
+    {        
+        float2 offset = float2(x + 0.5, y + 0.5);//halving lands us in the middle of 2x2 texels so sample texel centers accurately
+        float weight = exp(-dot(offset, offset) * g);
+        float2 tap_uv = uv + offset * texelsize;
+
+        weight = any(tap_uv <= boundaries.xy) || any(tap_uv >= boundaries.zw) ? 0 : weight;
+
+        res0 += tex2Dlod(s0, tap_uv, 0) * weight;
+        weightsum += weight;
+    }
+
+    [loop]for(int x = -samples; x < samples; x++)
+    [loop]for(int y = -samples; y < samples; y++)
+    {        
+        float2 offset = float2(x + 0.5, y + 0.5);//halving lands us in the middle of 2x2 texels so sample texel centers accurately
+        float weight = exp(-dot(offset, offset) * g);
+        float2 tap_uv = uv + offset * texelsize; 
+
+        weight = any(tap_uv <= boundaries.xy) || any(tap_uv >= boundaries.zw) ? 0 : weight;
+        res1 += tex2Dlod(s1, tap_uv, 0) * weight;
+    }
+
+    res0 /= weightsum;
+    res1 /= weightsum;
+}
+
+
+//identical, except with half the sigma but twice the sampling stride.
+//using this for the higher resolutions as cross-tile bleed becomes apparent at lower resolutions (larger texels)
+//and the higher resolutions are more performance critical
+void tile_downsample_fast(sampler s0, sampler s1, float2 uv, out float4 res0, out float4 res1)
+{
+    float2 num_tiles = float2(ATLAS_TILES_X, ATLAS_TILES_Y);
+
+    float4 boundaries;
+    boundaries.xy = floor(uv * num_tiles) / num_tiles;
+    boundaries.zw = boundaries.xy + rcp(num_tiles);    
+
+    float2 texelsize = rcp(tex2Dsize(s0, 0));
+
+    const float sigma = 2.0;
+    const int samples = ceil(2 * sigma);
+    const float g = 0.5 * rcp(sigma * sigma);
+
+    res0 = res1 = 0;
+    float weightsum = 0;
+
+    [loop]for(int x = -samples; x < samples; x++)
+    [loop]for(int y = -samples; y < samples; y++)
+    {        
+        float2 offset = float2(x + 0.5, y + 0.5);//halving lands us in the middle of 2x2 texels so sample texel centers accurately
+        float weight = exp(-dot(offset, offset) * g);
+        float2 tap_uv = uv + offset * texelsize * 2; 
+
+        weight = any(tap_uv <= boundaries.xy) || any(tap_uv >= boundaries.zw) ? 0 : weight;
+
+        res0 += tex2Dlod(s0, tap_uv, 0) * weight;
+        weightsum += weight;
+    }
+
+    [loop]for(int x = -samples; x < samples; x++)
+    [loop]for(int y = -samples; y < samples; y++)
+    {        
+        float2 offset = float2(x + 0.5, y + 0.5);//halving lands us in the middle of 2x2 texels so sample texel centers accurately
+        float weight = exp(-dot(offset, offset) * g);
+        float2 tap_uv = uv + offset * texelsize * 2; 
+
+        weight = any(tap_uv <= boundaries.xy) || any(tap_uv >= boundaries.zw) ? 0 : weight;
+        res1 += tex2Dlod(s1, tap_uv, 0) * weight;
+    }
+
+    res0 /= weightsum;
+    res1 /= weightsum;
+}
+
+
+#if TARGET_MIP >= 1
+void DownsamplePyramidsPS0(in VSOUT i, out PSOUT2 o){tile_downsample_fast(sLaunchpadExposureAtlasL0, sLaunchpadWeightAtlasL0, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 2
+void DownsamplePyramidsPS1(in VSOUT i, out PSOUT2 o){tile_downsample_fast(sLaunchpadExposureAtlasL1, sLaunchpadWeightAtlasL1, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 3
+void DownsamplePyramidsPS2(in VSOUT i, out PSOUT2 o){tile_downsample_fast(sLaunchpadExposureAtlasL2, sLaunchpadWeightAtlasL2, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 4
+void DownsamplePyramidsPS3(in VSOUT i, out PSOUT2 o){tile_downsample(sLaunchpadExposureAtlasL3, sLaunchpadWeightAtlasL3, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 5
+void DownsamplePyramidsPS4(in VSOUT i, out PSOUT2 o){tile_downsample(sLaunchpadExposureAtlasL4, sLaunchpadWeightAtlasL4, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 6
+void DownsamplePyramidsPS5(in VSOUT i, out PSOUT2 o){tile_downsample(sLaunchpadExposureAtlasL5, sLaunchpadWeightAtlasL5, i.uv, o.t0, o.t1);}
+#endif
+#if TARGET_MIP >= 7
+void DownsamplePyramidsPS6(in VSOUT i, out PSOUT2 o){tile_downsample(sLaunchpadExposureAtlasL6, sLaunchpadWeightAtlasL6, i.uv, o.t0, o.t1);}
+#endif
+
+void fetch_layers(sampler s, float2 uv, out float4 layers[4])
+{
+    const float2 num_tiles = float2(ATLAS_TILES_X, ATLAS_TILES_Y);
+    float2 tile_res = int2(tex2Dsize(s, 0)) / int2(num_tiles);
+    float2 texelsize = rcp(tile_res);
+
+    uv = clamp(uv, texelsize * 0.5, 1 - texelsize * 0.5);
+
+    [unroll]
+    for(int j = 0; j < ATLAS_TILES_X * ATLAS_TILES_Y; j++)
+    {
+        int x = j % ATLAS_TILES_X;
+        int y = j / ATLAS_TILES_X;
+        float2 tile_uv = (uv + float2(x, y)) / num_tiles; 
+        layers[j] = tex2Dlod(s, tile_uv, 0);
+    }
+}
+
+float hadamard(float4 A[4], float4 B[4])
+{
+    return dot(A[0], B[0]) + dot(A[1], B[1]) + dot(A[2], B[2]) + dot(A[3], B[3]);
+}
+
+float l1norm(float4 v[4])
+{
+    return dot(v[0], 1) + dot(v[1], 1) + dot(v[2], 1) + dot(v[3], 1);
+}
+
+float balance(int layer)
+{
+    float x = float(layer)/float(TARGET_MIP);
+    return exp2(-x * 3.0);
+}
+
+void CollapseTiledPyramidPS(in VSOUT i, out float2 o : SV_Target0)
+{
+    float collapsed = 0;
+
+    float4 G[4];
+    float4 W[4];
+    float weightsum;
+
+    float total_weightsum = 0;
+    float unnormalized_weightsum = 0;
+    float denom = float(TARGET_MIP);
+
+    fetch_layers(sLaunchpadExposureAtlasL0, i.uv, G);
+    fetch_layers(sLaunchpadWeightAtlasL0, i.uv, W);
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(0); //G0 x W0 add
+#if TARGET_MIP >= 1 
+    fetch_layers(sLaunchpadExposureAtlasL1, i.uv, G);//fetch G1
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(1);  //G1 x W0 subtract, this completes the first laplacian
+    fetch_layers(sLaunchpadWeightAtlasL1, i.uv, W); //fetch W1
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(1); //G1 x W1 add, this is either residual if we stop here or first half of next laplacian
+#endif
+#if TARGET_MIP >= 2
+    fetch_layers(sLaunchpadExposureAtlasL2, i.uv, G);//fetch G2
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(2); //G2 x W1 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL2, i.uv, W); //fetch W2
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(2); //G2 x W2 add, this is either residual if we stop here or first half of next laplacian
+#endif 
+#if TARGET_MIP >= 3
+    fetch_layers(sLaunchpadExposureAtlasL3, i.uv, G);//fetch G3
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(3); //G3 x W2 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL3, i.uv, W); //fetch W3
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(3); //G3 x W3 add, this is either residual if we stop here or first half of next laplacian
+#endif 
+#if TARGET_MIP >= 4
+    fetch_layers(sLaunchpadExposureAtlasL4, i.uv, G);//fetch G4
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(4); //G4 x W3 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL4, i.uv, W); //fetch W4
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(4); //G4 x W4 add, this is either residual if we stop here or first half of next laplacian
+#endif 
+#if TARGET_MIP >= 5
+    fetch_layers(sLaunchpadExposureAtlasL5, i.uv, G);//fetch G5
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(5); //G5 x W4 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL5, i.uv, W); //fetch W5
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(5); //G5 x W5 add, this is either residual if we stop here or first half of next laplacian
+ #endif 
+#if TARGET_MIP >= 6
+    fetch_layers(sLaunchpadExposureAtlasL6, i.uv, G);//fetch G6
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(6); //G6 x W5 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL6, i.uv, W); //fetch W6
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(6); //G6 x W6 add, this is either residual if we stop here or first half of next laplacian
+#endif 
+#if TARGET_MIP >= 7
+    fetch_layers(sLaunchpadExposureAtlasL7, i.uv, G);//fetch G7
+    collapsed -= hadamard(G, W) / max(1e-7, weightsum) * balance(7); //G7 x W6 subtract, this completes the second laplacian
+    fetch_layers(sLaunchpadWeightAtlasL7, i.uv, W); //fetch W7
+    weightsum = l1norm(W);
+    collapsed += hadamard(G, W) / max(1e-7, weightsum) * balance(7); //G7 x W7 add, this is either residual if we stop here or first half of next laplacian
+#endif 
+    o.x = collapsed; //collapsed pyramid
+    o.y = get_sdr_luma(tex2D(ColorInput, i.uv).rgb);
+}
+
+void UpsampleAtlasNewPS(in VSOUT i, out float4 o : SV_Target0)
+{
+    float3 c = tex2D(ColorInput, i.uv).rgb;
+    float luminance = get_sdr_luma(c); 
+
+    float4 moments = 0; //guide, guide^2, guide*signal, signal
+    float ws = 0.0;
+
+    float2 texelsize = rcp(tex2Dsize(sLaunchpadCollapsedExposurePyramidTex, 0));
+
+	float2 minmax = float2(1000, -1000);
+
+    for (int x = -1; x <= 1; x += 1)  
+    for (int y = -1; y <= 1; y += 1) 
+    {
+        float2 offs = float2(x, y);
+        float2 t = tex2D(sLaunchpadCollapsedExposurePyramidTex, i.uv + offs * texelsize).xy;
+        float w = exp(-0.5 * dot(offs, offs) / (0.7*0.7));
+        moments += float4(t.y, t.y * t.y, t.y * t.x, t.x) * w;
+        ws += w;
+
+		minmax.x = min(minmax.x, t.x);
+		minmax.y = max(minmax.y, t.x);
+    }    
+
+    moments /= ws;
+    
+    float A = (moments.z - moments.x * moments.w) / (max(moments.y - moments.x * moments.x, 0.0) + 0.00001);
+    float B = moments.w - A * moments.x;
+
+    float exposure_ratio = A * luminance + B;
+	exposure_ratio = clamp(exposure_ratio, minmax.x, minmax.y);
+    //exposure_ratio *= saturate(abs(INTENSITY)) * (INTENSITY > 0 ? 1 : -1);
+    exposure_ratio = exp2(exposure_ratio);
+
+    o.rgb = tex2D(ColorInput, i.uv).rgb;
+    o.rgb = sdr_to_hdr(o.rgb);
+    o.rgb *= exposure_ratio;
+
+    //creates less halos this way as it creates less sharp transitions between exposure brackets if exposure target is low/high
+    float3 target_hdr = sdr_to_hdr(ALBEDO_EXPOSURE_TARGET.xxx);
+    float3 current_hdr = sdr_to_hdr(0.5);
+    o.rgb *= target_hdr / current_hdr;
+    o.rgb = hdr_to_sdr(o.rgb);    
+    o.w = 1;
+
+	{
+		o.rgb = saturate(o.rgb);   
+		o.rgb = o.rgb*0.283799*((2.52405+o.rgb)*o.rgb);  
+		o.rgb = srgb_to_AgX(o.rgb);
+
+		//given scene color is lighting * albedo + lighting * albedo² * k + lighting*albedo³ * k² ... due to multiple bounces
+		//with a probability falloff for each consecutive bounce happening. This causes the actual albedo mostly being less saturated
+		//than the apparent scene color. I'm fudging things here by assuming a constant white light source. If we invert the MacLaurin series
+		//to get the actual source albedo given our assumptions, this turns out to be... a reinhard tonemap curve lmao
+		float maclaurin_power = 0.8; 
+		float3 albedoinversed = o.rgb / (1.0 + maclaurin_power * o.rgb);
+		o.rgb = dot(o.rgb, 0.33333) * albedoinversed / (1e-6 + dot(albedoinversed, 0.33333));	
+	}
+}
+
+texture RTGI_AlbedoTexV3      { Width = BUFFER_WIDTH;   Height = BUFFER_HEIGHT; Format = RGBA16F; };
+sampler sRTGI_AlbedoTexV3     { Texture = RTGI_AlbedoTexV3; };
+
 /*=============================================================================
 	Techniques
 =============================================================================*/
@@ -1114,17 +1728,17 @@ technique MartysMods_Launchpad
         "______________________________________________________________________________";
 >
 {    
-	//pass{PrimitiveTopology = POINTLIST;VertexCount = 1;VertexShader = FrameWriteVS;PixelShader  = FrameWritePS;RenderTarget = StateCounterTex;} 
-	pass {VertexShader = MainVS;PixelShader = NormalsPS; RenderTarget = Deferred::NormalsTexV2; }		
+	//pass {PrimitiveTopology = POINTLIST;VertexCount = 1;VertexShader = FrameWriteVS;PixelShader  = FrameWritePS;RenderTarget = StateCounterTex;} 
+	
+	pass { ComputeShader = NormalsCS<32, 32>;DispatchSizeX = CEIL_DIV(BUFFER_WIDTH_DLSS, 32); DispatchSizeY = CEIL_DIV(BUFFER_HEIGHT_DLSS, 32);}
+	//pass {VertexShader = MainVS;PixelShader = NormalsPS; RenderTarget = Deferred::NormalsTexV3; }	
 	pass {VertexShader = SmoothNormalsVS;PixelShader = SmoothNormalsMakeGbufPS;  RenderTarget = SmoothNormalsTempTex0;}
 	pass {VertexShader = SmoothNormalsVS;PixelShader = SmoothNormalsPass0PS;  RenderTarget = SmoothNormalsTempTex1;}
 	pass {VertexShader = SmoothNormalsVS;PixelShader = SmoothNormalsPass1PS;  RenderTarget = SmoothNormalsTempTex2;}
-	pass {VertexShader = SmoothNormalsVS;PixelShader = CopyNormalsPS; RenderTarget = Deferred::NormalsTexV2; }
-	
-	pass {VertexShader = MainVS;PixelShader = WriteDepthFeaturePS; RenderTarget0 = DepthLowresPacked; RenderTargetWriteMask = 1 << 0;} 
-    pass {VertexShader = MainVS;PixelShader = WriteFeaturePS; RenderTarget0 = FeaturePyramidLevel0; RenderTargetWriteMask = 1 << 0;} 
+	pass {VertexShader = SmoothNormalsVS;PixelShader = CopyNormalsPS; RenderTarget = Deferred::NormalsTexV3; }
 
-#if __RENDERER__ >= RENDERER_D3D10
+	pass {VertexShader = MainVS;PixelShader = WriteDepthFeaturePS;  RenderTarget0 = DepthLowresPacked; RenderTargetWriteMask = 1 << 0;} 
+    pass {VertexShader = MainVS;PixelShader = WriteFeaturePS; 	    RenderTarget0 = FeaturePyramidLevel0; RenderTargetWriteMask = 1 << 0;} 
 	pass {VertexShader = MainVS;PixelShader = DownsampleFeaturePS1;	RenderTarget = FeaturePyramidLevel1;}
 	pass {VertexShader = MainVS;PixelShader = DownsampleFeaturePS2;	RenderTarget = FeaturePyramidLevel2;}
 	pass {VertexShader = MainVS;PixelShader = DownsampleFeaturePS3;	RenderTarget = FeaturePyramidLevel3;}
@@ -1134,45 +1748,53 @@ technique MartysMods_Launchpad
 	pass {VertexShader = MainVS;PixelShader = DownsampleFeaturePS7;	RenderTarget = FeaturePyramidLevel7;}
 
 	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS8;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass8;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS7;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass7;		    RenderTarget = MotionTexNewB;}	
+	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS7;	RenderTarget = MotionTexNewB;}
 	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS6;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass6;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS5;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass5;		    RenderTarget = MotionTexNewB;}	
+	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS5;	RenderTarget = MotionTexNewB;}
 	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS4;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass4;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS3;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass3;		    RenderTarget = MotionTexNewB;}	
+	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS3;	RenderTarget = MotionTexNewB;}
 	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS2;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass2;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS1;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass1;		    RenderTarget = MotionTexNewB;}
-#else 
-	pass {VertexShader = MainVS;PixelShader = DownsampleFeatureTriPS1;	RenderTarget = FeaturePyramidLevel1;}
-	pass {VertexShader = MainVS;PixelShader = DownsampleFeatureTriPS2;	RenderTarget = FeaturePyramidLevel2;}
-	pass {VertexShader = MainVS;PixelShader = DownsampleFeatureTriPS3;	RenderTarget = FeaturePyramidLevel3;}
-	pass {VertexShader = MainVS;PixelShader = DownsampleFeatureTriPS4;	RenderTarget = FeaturePyramidLevel4;}
-	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS5;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass5;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS4;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass4;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS3;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass3;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS2;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass2;		    RenderTarget = MotionTexNewB;}	
-	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS1;	RenderTarget = MotionTexNewA;}
-	pass {VertexShader = MainVS;PixelShader = FilterPass1;		    RenderTarget = MotionTexNewB;}
-		
-	pass {VertexShader = MainVS;PixelShader = CopyToFullres;		RenderTarget = MotionTexIntermediateTex0;}
-#endif
+	pass {VertexShader = MainVS;PixelShader = BlockMatchingPassPS1;	RenderTarget = MotionTexNewB;}
+
+	pass {VertexShader = MainVS;PixelShader = UpscaleFlowPS0;		RenderTarget = MotionTexUpscale;}
+	pass {VertexShader = MainVS;PixelShader = UpscaleFlowPS1;		RenderTarget = MotionTexUpscale2;}
 		
 	pass {VertexShader = MainVS;PixelShader = CopyToFullres;		RenderTarget = MotionTexIntermediateTex0;}
 
 	pass {VertexShader = MainVS;PixelShader = WritePrevLowresDepthPS; RenderTarget0 = DepthLowresPacked; RenderTargetWriteMask = 1 << 1;} 
 	pass {VertexShader = MainVS;PixelShader = WriteFeaturePS2; RenderTarget0 = FeaturePyramidLevel0; RenderTargetWriteMask = 1 << 1;}	
+
+	pass{VertexShader = MainVS; PixelShader = InitPyramidAtlasPS;   RenderTarget0 = LaunchpadExposureAtlasL0; 
+                                                                	RenderTarget1 = LaunchpadWeightAtlasL0;}
+#if TARGET_MIP >= 1
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS0; RenderTarget0 = LaunchpadExposureAtlasL1; RenderTarget1 = LaunchpadWeightAtlasL1; }
+#if TARGET_MIP >= 2
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS1; RenderTarget0 = LaunchpadExposureAtlasL2; RenderTarget1 = LaunchpadWeightAtlasL2; }
+#if TARGET_MIP >= 3 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS2; RenderTarget0 = LaunchpadExposureAtlasL3; RenderTarget1 = LaunchpadWeightAtlasL3; }
+#if TARGET_MIP >= 4 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS3; RenderTarget0 = LaunchpadExposureAtlasL4; RenderTarget1 = LaunchpadWeightAtlasL4; }
+#if TARGET_MIP >= 5 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS4; RenderTarget0 = LaunchpadExposureAtlasL5; RenderTarget1 = LaunchpadWeightAtlasL5; }
+#if TARGET_MIP >= 6 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS5; RenderTarget0 = LaunchpadExposureAtlasL6; RenderTarget1 = LaunchpadWeightAtlasL6; }
+#if TARGET_MIP >= 7 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS6; RenderTarget0 = LaunchpadExposureAtlasL7; RenderTarget1 = LaunchpadWeightAtlasL7; } 
+#if TARGET_MIP >= 8 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS7; RenderTarget0 = LaunchpadExposureAtlasL8; RenderTarget1 = LaunchpadWeightAtlasL8; } 
+#if TARGET_MIP >= 9 
+    pass    {VertexShader = MainVS;PixelShader = DownsamplePyramidsPS8; RenderTarget0 = LaunchpadExposureAtlasL9; RenderTarget1 = LaunchpadWeightAtlasL9; } 
+#endif 
+#endif
+#endif
+#endif
+#endif
+#endif
+#endif
+#endif
+#endif 
+    pass{VertexShader = MainVS; PixelShader = CollapseTiledPyramidPS;  RenderTarget0 = LaunchpadCollapsedExposurePyramidTex;}  
+	pass{VertexShader = MainVS; PixelShader = UpsampleAtlasNewPS;  RenderTarget = RTGI_AlbedoTexV3;} 
 
 #if LAUNCHPAD_DEBUG_OUTPUT != 0 //why waste perf for this pass in normal mode
 	pass {VertexShader = MainVS;PixelShader  = DebugPS;  }			
