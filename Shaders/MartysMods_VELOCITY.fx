@@ -185,8 +185,8 @@ sampler sOldMotionTexUpscale   { Texture = OldMotionTexUpscale;  MipFilter=POINT
 texture OldMotionTexUpscale2   { Width = BUFFER_WIDTH >> 1;   Height = BUFFER_HEIGHT >> 1;   Format = RGBA16F;};
 sampler sOldMotionTexUpscale2  { Texture = OldMotionTexUpscale2;  MipFilter=POINT; MagFilter=POINT; MinFilter=POINT; };
 
-#define OldMotionTexIntermediateTex0 			Velocity::MotionVectorsTex
-#define sOldMotionTexIntermediateTex0 			Velocity::sMotionVectorsTex
+#define OldMotionTexIntermediateTex0 			Velocity::OldMotionVectorsTex
+#define sOldMotionTexIntermediateTex0 			Velocity::sOldMotionVectorsTex
 
 //curr in x, prev in y
 texture OldFeaturePyramidLevel0   { Width = BUFFER_WIDTH;   	  Height = BUFFER_HEIGHT;        Format = RG8; };
@@ -680,6 +680,7 @@ technique MartysMods_Velocity
         "\n"       
         "______________________________________________________________________________";
 >
+{
 	pass {VertexShader = MainVS;PixelShader = WriteDepthFeaturePS;  RenderTarget0 = OldDepthLowresPacked; RenderTargetWriteMask = 1 << 0;} 
     pass {VertexShader = MainVS;PixelShader = WriteFeaturePS; 	    RenderTarget0 = OldFeaturePyramidLevel0; RenderTargetWriteMask = 1 << 0;} 
 	pass {VertexShader = MainVS;PixelShader = DownsampleFeaturePS1;	RenderTarget = OldFeaturePyramidLevel1;}
