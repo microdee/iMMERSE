@@ -152,8 +152,8 @@ sampler DepthInput  { Texture = DepthInputTex; };
 #include ".\MartysMods\mmx_depth.fxh"
 #include ".\MartysMods\mmx_math.fxh"
 #include ".\MartysMods\mmx_qmc.fxh"
-#include ".\MartysMods\mmx_camera.fxh"
-#include ".\MartysMods\mmx_texture.fxh"
+//#include ".\MartysMods\mmx_camera.fxh"
+//#include ".\MartysMods\mmx_texture.fxh"
 
 namespace Velocity
 {
@@ -214,14 +214,6 @@ struct VSOUT
 {
     float4 vpos : SV_Position;
     float2 uv   : TEXCOORD0;
-};
-
-struct CSIN 
-{
-    uint3 groupthreadid     : SV_GroupThreadID;         //XYZ idx of thread inside group
-    uint3 groupid           : SV_GroupID;               //XYZ idx of group inside dispatch
-    uint3 dispatchthreadid  : SV_DispatchThreadID;      //XYZ idx of thread inside dispatch
-    uint threadid           : SV_GroupIndex;            //flattened idx of thread inside group
 };
 
 static float2 star_kernel[13] = 
